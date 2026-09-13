@@ -47,10 +47,6 @@ GEMINI_API_KEY = os.getenv(
 )
 
 
-# =========================================================
-# BASIC ENV CHECK
-# =========================================================
-
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError(
         "LINE_CHANNEL_ACCESS_TOKEN is not set"
@@ -95,6 +91,7 @@ gemini_client = genai.Client(
 
 @app.route("/", methods=["GET"])
 def home():
+
     return "LINE AI Assistant is running", 200
 
 
@@ -110,19 +107,21 @@ def callback():
     )
 
     try:
+
         handler.handle(
             body,
             signature
         )
 
     except InvalidSignatureError:
+
         abort(400)
 
     return "OK", 200
 
 
 # =========================================================
-# GEMINI ANALYSIS
+# AI FUNCTION
 # =========================================================
 
 def analyze_message(user_message):
@@ -139,6 +138,7 @@ def analyze_message(user_message):
         "%A"
     )
 
+
     prompt = f"""
 You are a personal work assistant.
 
@@ -148,12 +148,14 @@ Current date in Thailand:
 Today is:
 {current_weekday}
 
-The user may write in English, Thai,
-or mixed Thai and English.
+The user may write in:
+- English
+- Thai
+- mixed Thai and English
 
 Analyze the user's message.
 
-Classify it into one of these types:
+Classify it as one of:
 
 - task
 - reminder
@@ -179,91 +181,244 @@ Use exactly these fields:
 
 Rules:
 
-1. type must be one of:
-   task
-   reminder
-   idea
-   note
-   meeting
-   conversation
+1. type:
+task, reminder, idea, note,
+meeting, conversation
 
 2. task:
-   Make it short and clear.
-   If there is no task, use null.
+Short and clear.
+If no task, use null.
 
 3. project:
-   Identify the project or work topic
-   when possible.
-   Otherwise use null.
+Identify project or work topic.
+If unknown, use null.
 
 4. deadline:
-   Use YYYY-MM-DD.
-   If there is no deadline, use null.
+YYYY-MM-DD.
+If no deadline, use null.
 
 5. deadline_time:
-   Use HH:MM in 24-hour format.
-   If there is no time, use null.
+HH:MM.
+If no time, use null.
 
 6. priority:
-   Use:
-   high
-   normal
-   low
+high, normal, low.
 
 7. person:
-   Important person involved.
-   Otherwise use null.
+Important person involved.
+Otherwise null.
 
 8. summary:
-   Short useful summary.
+Short useful summary.
 
-9. Convert relative dates based on today's date.
+9. Convert relative dates using
+the current date.
 
 Examples:
 
-"tomorrow"
-means the next calendar day.
+tomorrow = next calendar day
 
-"Friday"
-means the next upcoming Friday.
+Friday = next upcoming Friday
 
-"วันพรุ่งนี้"
-means tomorrow.
+วันพรุ่งนี้ = tomorrow
 
-"วันศุกร์"
-means the next upcoming Friday.
+วันศุกร์ = next upcoming Friday
 
-User message:
+
+USER MESSAGE:
 
 {user_message}
 """
 
-    response = gemini_client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json"
-        )
+
+    # Model priority
+    models_to_try = [
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-lite"
+    ]
+
+
+    errors = []
+
+
+    for model_name in models_to_try:
+
+        try:
+
+            print(
+                f"Trying model: {model_name}"
+            )
+
+
+            response = (
+                gemini_client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type=
+                        "application/json"
+                    )
+                )
+            )
+
+
+            if not response.text:
+
+                raise RuntimeError(
+                    "Gemini returned empty response"
+                )
+
+
+            # =============================================
+            # TOKEN USAGE
+            # =============================================
+
+            usage = response.usage_metadata
+
+
+            prompt_tokens = 0
+            output_tokens = 0
+            total_tokens = 0
+            thinking_tokens = 0
+
+
+            if usage:
+
+                prompt_tokens = (
+                    usage.prompt_token_count or 0
+                )
+
+                output_tokens = (
+                    usage.candidates_token_count or 0
+                )
+
+                total_tokens = (
+                    usage.total_token_count or 0
+                )
+
+                thinking_tokens = (
+                    getattr(
+                        usage,
+                        "thoughts_token_count",
+                        0
+                    )
+                    or 0
+                )
+
+
+            print(
+                "========== GEMINI SUCCESS =========="
+            )
+
+            print(
+                "Model:",
+                model_name
+            )
+
+            print(
+                "Input tokens:",
+                prompt_tokens
+            )
+
+            print(
+                "Output tokens:",
+                output_tokens
+            )
+
+            print(
+                "Thinking tokens:",
+                thinking_tokens
+            )
+
+            print(
+                "Total tokens:",
+                total_tokens
+            )
+
+            print(
+                "===================================="
+            )
+
+
+            result = json.loads(
+                response.text
+            )
+
+
+            # Add technical information
+            # to our result
+
+            result["_model"] = model_name
+
+            result["_prompt_tokens"] = (
+                prompt_tokens
+            )
+
+            result["_output_tokens"] = (
+                output_tokens
+            )
+
+            result["_thinking_tokens"] = (
+                thinking_tokens
+            )
+
+            result["_total_tokens"] = (
+                total_tokens
+            )
+
+            result["_fallback_used"] = (
+                model_name != models_to_try[0]
+            )
+
+
+            return result
+
+
+        except Exception as error:
+
+            error_string = str(error)
+
+            print(
+                "========== MODEL FAILED =========="
+            )
+
+            print(
+                model_name
+            )
+
+            print(
+                type(error).__name__
+            )
+
+            print(
+                error_string
+            )
+
+            print(
+                "=================================="
+            )
+
+
+            errors.append(
+                f"{model_name}: "
+                + error_string
+            )
+
+
+            # Continue to next model
+            continue
+
+
+    # If every model fails
+
+    raise RuntimeError(
+        "All Gemini models failed:\n"
+        + "\n".join(errors)
     )
-
-    if not response.text:
-        raise RuntimeError(
-            "Gemini returned an empty response"
-        )
-
-    print("========== GEMINI RAW ==========")
-    print(response.text)
-    print("================================")
-
-    result = json.loads(
-        response.text
-    )
-
-    return result
 
 
 # =========================================================
-# FORMAT RESULT
+# FORMAT AI RESULT
 # =========================================================
 
 def format_result(data):
@@ -302,7 +457,42 @@ def format_result(data):
         "summary"
     )
 
+
+    # Technical usage
+
+    model = data.get(
+        "_model",
+        "Unknown"
+    )
+
+    prompt_tokens = data.get(
+        "_prompt_tokens",
+        0
+    )
+
+    output_tokens = data.get(
+        "_output_tokens",
+        0
+    )
+
+    thinking_tokens = data.get(
+        "_thinking_tokens",
+        0
+    )
+
+    total_tokens = data.get(
+        "_total_tokens",
+        0
+    )
+
+    fallback_used = data.get(
+        "_fallback_used",
+        False
+    )
+
+
     lines = []
+
 
     lines.append(
         "🤖 AI Assistant"
@@ -310,25 +500,32 @@ def format_result(data):
 
     lines.append("")
 
+
     lines.append(
         f"Type: {message_type}"
     )
 
+
     if task:
+
         lines.append(
             f"📌 Task: {task}"
         )
 
+
     if project:
+
         lines.append(
             f"📁 Project: {project}"
         )
+
 
     if deadline:
 
         deadline_text = deadline
 
         if deadline_time:
+
             deadline_text += (
                 f" {deadline_time}"
             )
@@ -337,23 +534,88 @@ def format_result(data):
             f"📅 Deadline: {deadline_text}"
         )
 
+
     if priority:
+
         lines.append(
             f"⭐ Priority: {priority}"
         )
 
+
     if person:
+
         lines.append(
             f"👤 Person: {person}"
         )
 
+
     if summary:
+
         lines.append("")
+
         lines.append(
             f"Summary: {summary}"
         )
 
-    return "\n".join(lines)
+
+    # =============================================
+    # AI STATUS
+    # =============================================
+
+    lines.append("")
+    lines.append(
+        "──────────────"
+    )
+
+    lines.append(
+        "⚙️ AI Status"
+    )
+
+
+    if fallback_used:
+
+        lines.append(
+            "🔄 Fallback used"
+        )
+
+    else:
+
+        lines.append(
+            "✅ Primary model"
+        )
+
+
+    lines.append(
+        f"🧠 Model: {model}"
+    )
+
+
+    lines.append(
+        f"📥 Input: {prompt_tokens} tokens"
+    )
+
+
+    lines.append(
+        f"📤 Output: {output_tokens} tokens"
+    )
+
+
+    if thinking_tokens > 0:
+
+        lines.append(
+            f"💭 Thinking: "
+            f"{thinking_tokens} tokens"
+        )
+
+
+    lines.append(
+        f"📊 Total: {total_tokens} tokens"
+    )
+
+
+    return "\n".join(
+        lines
+    )
 
 
 # =========================================================
@@ -366,11 +628,23 @@ def format_result(data):
 )
 def handle_text_message(event):
 
-    user_message = event.message.text
+    user_message = (
+        event.message.text
+    )
 
-    print("========== USER MESSAGE ==========")
-    print(user_message)
-    print("==================================")
+
+    print(
+        "========== USER =========="
+    )
+
+    print(
+        user_message
+    )
+
+    print(
+        "=========================="
+    )
+
 
     try:
 
@@ -382,10 +656,11 @@ def handle_text_message(event):
             result
         )
 
+
     except Exception as error:
 
         print(
-            "========== GEMINI ERROR =========="
+            "========== AI ERROR =========="
         )
 
         print(
@@ -397,20 +672,28 @@ def handle_text_message(event):
         )
 
         print(
-            "=================================="
+            "=============================="
         )
+
 
         error_text = str(error)
 
-        if len(error_text) > 700:
-            error_text = error_text[:700]
+        if len(error_text) > 800:
+
+            error_text = (
+                error_text[:800]
+            )
+
 
         reply_text = (
-            "⚠️ Gemini error\n\n"
-            + type(error).__name__
-            + "\n\n"
+            "⚠️ AI Assistant error\n\n"
             + error_text
         )
+
+
+    # =============================================
+    # SEND REPLY TO LINE
+    # =============================================
 
     with ApiClient(
         configuration
@@ -422,7 +705,9 @@ def handle_text_message(event):
 
         line_api.reply_message(
             ReplyMessageRequest(
-                reply_token=event.reply_token,
+                reply_token=
+                event.reply_token,
+
                 messages=[
                     TextMessage(
                         text=reply_text
@@ -433,7 +718,7 @@ def handle_text_message(event):
 
 
 # =========================================================
-# RUN
+# START APP
 # =========================================================
 
 if __name__ == "__main__":
