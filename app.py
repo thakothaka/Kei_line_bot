@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import requests
 
 from datetime import datetime
@@ -14,13 +15,15 @@ from linebot.v3.messaging import (
     ApiClient,
     Configuration,
     MessagingApi,
+    MessagingApiBlob,
     ReplyMessageRequest,
     TextMessage
 )
 
 from linebot.v3.webhooks import (
     MessageEvent,
-    TextMessageContent
+    TextMessageContent,
+    ImageMessageContent
 )
 
 from google import genai
@@ -59,32 +62,18 @@ GOOGLE_APPS_SCRIPT_SECRET = os.getenv(
 )
 
 
-# =========================================================
-# ENVIRONMENT CHECK
-# =========================================================
-
 required_vars = {
-    "LINE_CHANNEL_ACCESS_TOKEN":
-        LINE_CHANNEL_ACCESS_TOKEN,
-
-    "LINE_CHANNEL_SECRET":
-        LINE_CHANNEL_SECRET,
-
-    "GEMINI_API_KEY":
-        GEMINI_API_KEY,
-
-    "GOOGLE_APPS_SCRIPT_URL":
-        GOOGLE_APPS_SCRIPT_URL,
-
-    "GOOGLE_APPS_SCRIPT_SECRET":
-        GOOGLE_APPS_SCRIPT_SECRET
+    "LINE_CHANNEL_ACCESS_TOKEN": LINE_CHANNEL_ACCESS_TOKEN,
+    "LINE_CHANNEL_SECRET": LINE_CHANNEL_SECRET,
+    "GEMINI_API_KEY": GEMINI_API_KEY,
+    "GOOGLE_APPS_SCRIPT_URL": GOOGLE_APPS_SCRIPT_URL,
+    "GOOGLE_APPS_SCRIPT_SECRET": GOOGLE_APPS_SCRIPT_SECRET
 }
 
 
 for name, value in required_vars.items():
 
     if not value:
-
         raise RuntimeError(
             f"{name} is not set"
         )
@@ -113,16 +102,13 @@ gemini_client = genai.Client(
 
 
 # =========================================================
-# WEB ROUTES
+# ROUTES
 # =========================================================
 
 @app.route("/", methods=["GET"])
 def home():
 
-    return (
-        "LINE AI Assistant is running",
-        200
-    )
+    return "LINE AI Assistant is running", 200
 
 
 @app.route("/callback", methods=["POST"])
@@ -149,75 +135,26 @@ def callback():
 
     return "OK", 200
 
-@app.route("/test-google", methods=["GET"])
-def test_google():
-
-    payload = {
-        "secret": GOOGLE_APPS_SCRIPT_SECRET,
-        "type": "task",
-        "task": "Test from Render",
-        "project": "AI Assistant",
-        "deadline": "2026-09-18",
-        "deadline_time": "",
-        "priority": "normal",
-        "person": "",
-        "summary": "Testing Google Sheet connection",
-        "status": "Open",
-        "original_message": "Render connection test"
-    }
-
-    try:
-
-        response = requests.post(
-            GOOGLE_APPS_SCRIPT_URL,
-            json=payload,
-            timeout=30,
-            allow_redirects=True
-        )
-
-        return {
-            "status_code": response.status_code,
-            "final_url": response.url,
-            "history": [
-                {
-                    "status": r.status_code,
-                    "url": r.url
-                }
-                for r in response.history
-            ],
-            "body": response.text[:1000]
-        }, 200
-
-    except Exception as error:
-
-        return {
-            "error": str(error)
-        }, 500
 
 # =========================================================
-# GEMINI ANALYSIS
+# PROMPT
 # =========================================================
 
-def analyze_message(user_message):
+def build_prompt():
 
     bangkok_time = datetime.now(
         ZoneInfo("Asia/Bangkok")
     )
 
-    current_date = (
-        bangkok_time.strftime(
-            "%Y-%m-%d"
-        )
+    current_date = bangkok_time.strftime(
+        "%Y-%m-%d"
     )
 
-    current_weekday = (
-        bangkok_time.strftime(
-            "%A"
-        )
+    current_weekday = bangkok_time.strftime(
+        "%A"
     )
 
-
-    prompt = f"""
+    return f"""
 You are a personal work assistant.
 
 Current date in Thailand:
@@ -226,12 +163,17 @@ Current date in Thailand:
 Today is:
 {current_weekday}
 
-The user may write in:
+The user may provide:
 - English
 - Thai
 - mixed Thai and English
+- screenshots
+- photos
+- meeting notes
+- email screenshots
+- documents shown in images
 
-Analyze the user's message.
+Analyze the content.
 
 Classify it into exactly one type:
 
@@ -268,12 +210,11 @@ meeting
 conversation
 
 2. task:
-Create a short and clear description.
-If no action is required, use null.
+Short and clear.
+If there is no action, use null.
 
 3. project:
-Identify project or work topic
-if possible.
+Identify project or work topic.
 Otherwise null.
 
 4. deadline:
@@ -285,7 +226,6 @@ Use HH:MM in 24-hour format.
 Otherwise null.
 
 6. priority:
-Use:
 high
 normal
 low
@@ -295,68 +235,42 @@ Important person involved.
 Otherwise null.
 
 8. summary:
-Create a short useful summary.
+Short useful summary.
 
 9. Convert relative dates using
 the current Thailand date.
 
-Examples:
+10. Do not invent a deadline.
 
-tomorrow = next calendar day
+11. If an image contains multiple dates,
+choose the deadline most relevant
+to the action.
 
-Friday = next upcoming Friday
+12. If content is general information,
+use note.
 
-วันพรุ่งนี้ = tomorrow
-
-วันศุกร์ = next upcoming Friday
-
-10. Do not invent a deadline if
-the user does not mention one.
-
-11. Do not classify greetings,
-questions, or general chat as tasks.
-
-
-USER MESSAGE:
-
-{user_message}
+13. If casual chat only,
+use conversation.
 """
 
 
-    # =====================================================
-    # MODEL FALLBACK LIST
-    # =====================================================
-    #
-    # Lighter models first.
-    #
-    # If a model is not available to your API project,
-    # it will simply fail and move to the next model.
-    # =====================================================
+# =========================================================
+# GEMINI FALLBACK
+# =========================================================
+
+def call_gemini(contents):
 
     models_to_try = [
-
         "gemini-3.1-flash-lite",
-
         "gemini-3.5-flash-lite",
-
         "gemini-3.5-flash",
-
         "gemini-3.6-flash",
-
         "gemini-3.7-flash",
-
         "gemini-3.8-flash",
-
         "gemini-2.5-flash-lite"
     ]
 
-
     errors = []
-
-
-    # =====================================================
-    # TRY EACH MODEL
-    # =====================================================
 
     for model_index, model_name in enumerate(
         models_to_try
@@ -364,77 +278,34 @@ USER MESSAGE:
 
         try:
 
-            attempt_number = (
-                model_index + 1
-            )
-
+            attempt_number = model_index + 1
 
             print(
-                "================================="
+                f"Trying Gemini model: {model_name}"
             )
-
-            print(
-                f"Gemini attempt "
-                f"{attempt_number}"
-            )
-
-            print(
-                f"Model: {model_name}"
-            )
-
-            print(
-                "================================="
-            )
-
 
             response = (
-                gemini_client
-                .models
-                .generate_content(
-
+                gemini_client.models.generate_content(
                     model=model_name,
-
-                    contents=prompt,
-
-                    config=
-                    types.GenerateContentConfig(
-
-                        response_mime_type=
-                        "application/json",
-
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
                         temperature=0.1
-
                     )
                 )
             )
 
-
-            # =================================================
-            # EMPTY RESPONSE CHECK
-            # =================================================
-
             if not response.text:
-
                 raise RuntimeError(
-                    "Gemini returned "
-                    "an empty response"
+                    "Gemini returned empty response"
                 )
 
-
-            # =================================================
-            # TOKEN USAGE
-            # =================================================
-
-            usage = (
-                response.usage_metadata
-            )
-
+            usage = response.usage_metadata
 
             prompt_tokens = 0
             output_tokens = 0
             thinking_tokens = 0
             total_tokens = 0
-
 
             if usage:
 
@@ -447,7 +318,6 @@ USER MESSAGE:
                     or 0
                 )
 
-
                 output_tokens = (
                     getattr(
                         usage,
@@ -456,7 +326,6 @@ USER MESSAGE:
                     )
                     or 0
                 )
-
 
                 thinking_tokens = (
                     getattr(
@@ -467,7 +336,6 @@ USER MESSAGE:
                     or 0
                 )
 
-
                 total_tokens = (
                     getattr(
                         usage,
@@ -477,177 +345,94 @@ USER MESSAGE:
                     or 0
                 )
 
-
-            # =================================================
-            # PARSE JSON
-            # =================================================
-
-            print(
-                "RAW GEMINI RESPONSE:"
-            )
-
-            print(
-                response.text
-            )
-
-
             result = json.loads(
                 response.text
             )
 
-
-            # =================================================
-            # ADD INTERNAL DATA
-            # =================================================
-
-            result["_model"] = (
-                model_name
-            )
-
-
-            result["_attempt"] = (
-                attempt_number
-            )
-
-
-            result["_prompt_tokens"] = (
-                prompt_tokens
-            )
-
-
-            result["_output_tokens"] = (
-                output_tokens
-            )
-
-
-            result["_thinking_tokens"] = (
-                thinking_tokens
-            )
-
-
-            result["_total_tokens"] = (
-                total_tokens
-            )
-
-
-            print(
-                "================================="
-            )
-
-            print(
-                "GEMINI SUCCESS"
-            )
-
-            print(
-                f"Model: {model_name}"
-            )
-
-            print(
-                f"Attempt: "
-                f"{attempt_number}"
-            )
-
-            print(
-                f"Total tokens: "
-                f"{total_tokens}"
-            )
-
-            print(
-                "================================="
-            )
-
+            result["_model"] = model_name
+            result["_attempt"] = attempt_number
+            result["_prompt_tokens"] = prompt_tokens
+            result["_output_tokens"] = output_tokens
+            result["_thinking_tokens"] = thinking_tokens
+            result["_total_tokens"] = total_tokens
 
             return result
-
-
-        # =====================================================
-        # MODEL FAILED
-        # =====================================================
 
         except Exception as error:
 
             error_text = str(error)
 
-
             print(
-                "================================="
+                "Gemini model failed:",
+                model_name,
+                error_text
             )
-
-            print(
-                "MODEL FAILED"
-            )
-
-            print(
-                f"Model: {model_name}"
-            )
-
-            print(
-                f"Error: {error_text}"
-            )
-
-            print(
-                "================================="
-            )
-
 
             errors.append(
-                {
-                    "model":
-                        model_name,
-
-                    "error":
-                        error_text
-                }
+                f"{model_name}: {error_text[:200]}"
             )
-
-
-            # Automatically move
-            # to next model
 
             continue
 
-
-    # =====================================================
-    # ALL MODELS FAILED
-    # =====================================================
-
-    error_summary = []
-
-
-    for item in errors:
-
-        short_error = (
-            item["error"][:180]
-        )
-
-        error_summary.append(
-            f"{item['model']}: "
-            f"{short_error}"
-        )
-
-
     raise RuntimeError(
-
         "All Gemini models failed:\n"
-        +
-        "\n".join(
-            error_summary
-        )
-
+        + "\n".join(errors)
     )
 
 
 # =========================================================
-# GOOGLE SHEET
+# ANALYZE TEXT
 # =========================================================
 
-def save_to_google_sheet(
+def analyze_text(user_message):
+
+    prompt = build_prompt()
+
+    full_prompt = (
+        prompt
+        + "\n\nUSER MESSAGE:\n"
+        + user_message
+    )
+
+    return call_gemini(
+        full_prompt
+    )
+
+
+# =========================================================
+# ANALYZE IMAGE
+# =========================================================
+
+def analyze_image(image_bytes):
+
+    prompt = build_prompt()
+
+    image_part = types.Part.from_bytes(
+        data=image_bytes,
+        mime_type="image/jpeg"
+    )
+
+    contents = [
+        prompt,
+        image_part
+    ]
+
+    return call_gemini(
+        contents
+    )
+
+
+# =========================================================
+# SAVE TO GOOGLE
+# =========================================================
+
+def save_to_google(
     data,
-    original_message
+    original_message,
+    image_bytes=None
 ):
 
     payload = {
-
         "secret":
             GOOGLE_APPS_SCRIPT_SECRET,
 
@@ -664,9 +449,7 @@ def save_to_google_sheet(
             data.get("deadline"),
 
         "deadline_time":
-            data.get(
-                "deadline_time"
-            ),
+            data.get("deadline_time"),
 
         "priority":
             data.get(
@@ -685,277 +468,197 @@ def save_to_google_sheet(
 
         "original_message":
             original_message
-
     }
 
 
-    print(
-        "Sending data to Google Apps Script..."
-    )
+    # =====================================================
+    # IMAGE TO BASE64
+    # =====================================================
+
+    if image_bytes:
+
+        image_base64 = (
+            base64.b64encode(
+                image_bytes
+            )
+            .decode("utf-8")
+        )
+
+        payload["image_base64"] = (
+            image_base64
+        )
+
+        payload["image_mime_type"] = (
+            "image/jpeg"
+        )
 
 
     response = requests.post(
-
         GOOGLE_APPS_SCRIPT_URL,
-
         json=payload,
-
-        timeout=30,
-
+        timeout=60,
         allow_redirects=True
     )
 
 
     print(
-        "Google HTTP status:",
+        "Google status:",
         response.status_code
     )
 
-
     print(
         "Google response:",
-        response.text[:500]
+        response.text[:1000]
     )
 
 
     if response.status_code != 200:
 
         raise RuntimeError(
-
-            "Google Apps Script returned HTTP "
-            +
-            str(
-                response.status_code
-            )
-
+            "Google Apps Script HTTP "
+            + str(response.status_code)
         )
 
 
-    try:
-
-        result = (
-            response.json()
-        )
+    result = response.json()
 
 
-    except Exception:
+    if result.get("status") != "success":
 
         raise RuntimeError(
-
-            "Google Apps Script "
-            "returned invalid JSON: "
-            +
-            response.text[:300]
-
-        )
-
-
-    if (
-        result.get("status")
-        !=
-        "success"
-    ):
-
-        raise RuntimeError(
-
             result.get(
                 "message",
-                "Google Sheet save failed"
+                "Google save failed"
             )
-
         )
 
 
-    return True
+    return result
 
 
 # =========================================================
-# FORMAT LINE RESPONSE
+# SHOULD SAVE
+# =========================================================
+
+def should_save(result):
+
+    return result.get(
+        "type"
+    ) in [
+        "task",
+        "reminder",
+        "meeting",
+        "idea",
+        "note"
+    ]
+
+
+# =========================================================
+# FORMAT RESULT
 # =========================================================
 
 def format_result(
     data,
-    saved_to_sheet=False,
-    sheet_error=None
+    google_result=None,
+    save_error=None
 ):
 
-    message_type = (
-        data.get(
-            "type",
-            "conversation"
-        )
+    message_type = data.get(
+        "type",
+        "conversation"
     )
 
-
-    task = data.get(
-        "task"
-    )
-
-
-    project = data.get(
-        "project"
-    )
-
-
-    deadline = data.get(
-        "deadline"
-    )
-
-
-    deadline_time = data.get(
-        "deadline_time"
-    )
-
-
+    task = data.get("task")
+    project = data.get("project")
+    deadline = data.get("deadline")
+    deadline_time = data.get("deadline_time")
     priority = data.get(
         "priority",
         "normal"
     )
-
-
-    person = data.get(
-        "person"
-    )
-
-
-    summary = data.get(
-        "summary"
-    )
-
-
-    # =====================================================
-    # AI TECHNICAL INFO
-    # =====================================================
+    person = data.get("person")
+    summary = data.get("summary")
 
     model = data.get(
         "_model",
         "Unknown"
     )
 
-
     attempt = data.get(
         "_attempt",
         1
     )
-
 
     prompt_tokens = data.get(
         "_prompt_tokens",
         0
     )
 
-
     output_tokens = data.get(
         "_output_tokens",
         0
     )
-
 
     thinking_tokens = data.get(
         "_thinking_tokens",
         0
     )
 
-
     total_tokens = data.get(
         "_total_tokens",
         0
     )
 
-
-    # =====================================================
-    # BUILD MESSAGE
-    # =====================================================
-
     lines = []
-
 
     lines.append(
         "🤖 AI Assistant"
     )
 
-
     lines.append("")
-
 
     lines.append(
         f"Type: {message_type}"
     )
 
 
-    # =====================================================
-    # TASK
-    # =====================================================
-
     if task:
-
         lines.append(
             f"📌 Task: {task}"
         )
 
 
-    # =====================================================
-    # PROJECT
-    # =====================================================
-
     if project:
-
         lines.append(
             f"📁 Project: {project}"
         )
 
 
-    # =====================================================
-    # DEADLINE
-    # =====================================================
-
     if deadline:
 
-        deadline_text = (
-            deadline
-        )
-
+        deadline_text = deadline
 
         if deadline_time:
-
             deadline_text += (
-                " "
-                +
-                deadline_time
+                f" {deadline_time}"
             )
 
-
         lines.append(
-            f"📅 Deadline: "
-            f"{deadline_text}"
+            f"📅 Deadline: {deadline_text}"
         )
 
 
-    # =====================================================
-    # PRIORITY
-    # =====================================================
-
     if priority:
-
         lines.append(
             f"⭐ Priority: {priority}"
         )
 
 
-    # =====================================================
-    # PERSON
-    # =====================================================
-
     if person:
-
         lines.append(
             f"👤 Person: {person}"
         )
 
-
-    # =====================================================
-    # SUMMARY
-    # =====================================================
 
     if summary:
 
@@ -966,18 +669,36 @@ def format_result(
         )
 
 
-    # =====================================================
-    # DATABASE STATUS
-    # =====================================================
-
     lines.append("")
 
 
-    if saved_to_sheet:
+    # =====================================================
+    # GOOGLE RESULT
+    # =====================================================
+
+    if google_result:
 
         lines.append(
             "💾 Saved to Google Sheet ✅"
         )
+
+
+        if google_result.get(
+            "calendar_created"
+        ):
+
+            lines.append(
+                "📅 Added to Google Calendar ✅"
+            )
+
+
+        if google_result.get(
+            "drive_file_url"
+        ):
+
+            lines.append(
+                "🖼 Saved to Google Drive ✅"
+            )
 
 
     elif message_type == "conversation":
@@ -990,15 +711,13 @@ def format_result(
     else:
 
         lines.append(
-            "⚠️ Google Sheet save failed"
+            "⚠️ Save failed"
         )
 
-
-        if sheet_error:
+        if save_error:
 
             lines.append(
-                f"Reason: "
-                f"{sheet_error[:150]}"
+                f"Reason: {save_error[:200]}"
             )
 
 
@@ -1011,7 +730,6 @@ def format_result(
     lines.append(
         "──────────────"
     )
-
 
     lines.append(
         "⚙️ AI Status"
@@ -1035,30 +753,24 @@ def format_result(
         f"🧠 Model: {model}"
     )
 
-
     lines.append(
-        f"📥 Input: "
-        f"{prompt_tokens} tokens"
+        f"📥 Input: {prompt_tokens} tokens"
     )
 
-
     lines.append(
-        f"📤 Output: "
-        f"{output_tokens} tokens"
+        f"📤 Output: {output_tokens} tokens"
     )
 
 
     if thinking_tokens > 0:
 
         lines.append(
-            f"💭 Thinking: "
-            f"{thinking_tokens} tokens"
+            f"💭 Thinking: {thinking_tokens} tokens"
         )
 
 
     lines.append(
-        f"📊 Total: "
-        f"{total_tokens} tokens"
+        f"📊 Total: {total_tokens} tokens"
     )
 
 
@@ -1068,7 +780,7 @@ def format_result(
 
 
 # =========================================================
-# LINE TEXT HANDLER
+# TEXT HANDLER
 # =========================================================
 
 @handler.add(
@@ -1081,217 +793,190 @@ def handle_text_message(event):
         event.message.text
     )
 
-
-    print(
-        "================================="
-    )
-
-    print(
-        "USER MESSAGE"
-    )
-
-    print(
-        user_message
-    )
-
-    print(
-        "================================="
-    )
-
-
     try:
 
-        # =================================================
-        # ANALYZE WITH GEMINI
-        # =================================================
-
-        result = analyze_message(
+        result = analyze_text(
             user_message
         )
 
-
-        # =================================================
-        # DECIDE WHETHER TO STORE
-        # =================================================
-
-        saved_to_sheet = False
-
-        sheet_error_text = None
+        google_result = None
+        save_error = None
 
 
-        types_to_save = [
-
-            "task",
-
-            "reminder",
-
-            "meeting",
-
-            "idea",
-
-            "note"
-
-        ]
-
-
-        if (
-            result.get("type")
-            in
-            types_to_save
-        ):
+        if should_save(result):
 
             try:
 
-                save_to_google_sheet(
-                    result,
-                    user_message
+                google_result = (
+                    save_to_google(
+                        result,
+                        user_message
+                    )
                 )
 
+            except Exception as error:
 
-                saved_to_sheet = True
+                save_error = str(error)
 
-
-            except Exception as sheet_error:
-
-                sheet_error_text = (
-                    str(sheet_error)
-                )
-
-
-                print(
-                    "================================="
-                )
-
-                print(
-                    "GOOGLE SHEET ERROR"
-                )
-
-                print(
-                    sheet_error_text
-                )
-
-                print(
-                    "================================="
-                )
-
-
-        # =================================================
-        # FORMAT RESPONSE
-        # =================================================
 
         reply_text = format_result(
-
             result,
-
-            saved_to_sheet,
-
-            sheet_error_text
-
+            google_result,
+            save_error
         )
 
-
-    # =====================================================
-    # GENERAL ERROR
-    # =====================================================
 
     except Exception as error:
 
-        print(
-            "================================="
-        )
-
-        print(
-            "AI ASSISTANT ERROR"
-        )
-
-        print(
-            str(error)
-        )
-
-        print(
-            "================================="
-        )
-
-
-        error_text = str(
-            error
-        )
-
-
-        if (
-            len(error_text)
-            >
-            1000
-        ):
-
-            error_text = (
-                error_text[:1000]
-            )
-
-
         reply_text = (
-
             "⚠️ AI Assistant error\n\n"
-            +
-            error_text
-
+            + str(error)[:1000]
         )
 
-
-    # =====================================================
-    # SEND MESSAGE TO LINE
-    # =====================================================
 
     with ApiClient(
         configuration
     ) as api_client:
 
+        line_api = MessagingApi(
+            api_client
+        )
+
+        line_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=
+                    event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=reply_text
+                    )
+                ]
+            )
+        )
+
+
+# =========================================================
+# IMAGE HANDLER
+# =========================================================
+
+@handler.add(
+    MessageEvent,
+    message=ImageMessageContent
+)
+def handle_image_message(event):
+
+    try:
+
+        print(
+            "Downloading image from LINE..."
+        )
+
+
+        with ApiClient(
+            configuration
+        ) as api_client:
+
+            blob_api = MessagingApiBlob(
+                api_client
+            )
+
+            image_bytes = (
+                blob_api.get_message_content(
+                    event.message.id
+                )
+            )
+
+
+        print(
+            "Image downloaded."
+        )
+
+
+        # =================================================
+        # AI ANALYSIS
+        # =================================================
+
+        result = analyze_image(
+            image_bytes
+        )
+
+
+        google_result = None
+        save_error = None
+
+
+        if should_save(result):
+
+            try:
+
+                google_result = (
+                    save_to_google(
+                        result,
+                        "[Image from LINE]",
+                        image_bytes=image_bytes
+                    )
+                )
+
+            except Exception as error:
+
+                save_error = str(error)
+
+
+        reply_text = format_result(
+            result,
+            google_result,
+            save_error
+        )
+
+
+    except Exception as error:
+
+        print(
+            "IMAGE ERROR:",
+            str(error)
+        )
+
+        reply_text = (
+            "⚠️ Image analysis failed\n\n"
+            + str(error)[:1000]
+        )
+
+
+    with ApiClient(
+        configuration
+    ) as api_client:
 
         line_api = MessagingApi(
             api_client
         )
 
-
         line_api.reply_message(
-
             ReplyMessageRequest(
-
                 reply_token=
                     event.reply_token,
-
                 messages=[
-
                     TextMessage(
                         text=reply_text
                     )
-
                 ]
-
             )
-
         )
 
 
 # =========================================================
-# START APPLICATION
+# START
 # =========================================================
 
 if __name__ == "__main__":
 
     port = int(
-
         os.environ.get(
             "PORT",
             10000
         )
-
     )
 
-
     app.run(
-
         host="0.0.0.0",
-
         port=port
-
     )
