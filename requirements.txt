@@ -2,3 +2,4 @@ Flask
 gunicorn
 line-bot-sdk
 google-genai
+requests

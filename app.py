@@ -1,5 +1,7 @@
 import os
 import json
+import requests
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -7,6 +9,7 @@ from flask import Flask, request, abort
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
+
 from linebot.v3.messaging import (
     ApiClient,
     Configuration,
@@ -14,6 +17,7 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage
 )
+
 from linebot.v3.webhooks import (
     MessageEvent,
     TextMessageContent
@@ -46,6 +50,18 @@ GEMINI_API_KEY = os.getenv(
     "GEMINI_API_KEY"
 )
 
+GOOGLE_APPS_SCRIPT_URL = os.getenv(
+    "GOOGLE_APPS_SCRIPT_URL"
+)
+
+GOOGLE_APPS_SCRIPT_SECRET = os.getenv(
+    "GOOGLE_APPS_SCRIPT_SECRET"
+)
+
+
+# =========================================================
+# ENVIRONMENT CHECK
+# =========================================================
 
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError(
@@ -60,6 +76,16 @@ if not LINE_CHANNEL_SECRET:
 if not GEMINI_API_KEY:
     raise RuntimeError(
         "GEMINI_API_KEY is not set"
+    )
+
+if not GOOGLE_APPS_SCRIPT_URL:
+    raise RuntimeError(
+        "GOOGLE_APPS_SCRIPT_URL is not set"
+    )
+
+if not GOOGLE_APPS_SCRIPT_SECRET:
+    raise RuntimeError(
+        "GOOGLE_APPS_SCRIPT_SECRET is not set"
     )
 
 
@@ -92,7 +118,10 @@ gemini_client = genai.Client(
 @app.route("/", methods=["GET"])
 def home():
 
-    return "LINE AI Assistant is running", 200
+    return (
+        "LINE AI Assistant is running",
+        200
+    )
 
 
 @app.route("/callback", methods=["POST"])
@@ -121,7 +150,7 @@ def callback():
 
 
 # =========================================================
-# AI FUNCTION
+# GEMINI ANALYSIS
 # =========================================================
 
 def analyze_message(user_message):
@@ -155,7 +184,7 @@ The user may write in:
 
 Analyze the user's message.
 
-Classify it as one of:
+Classify it as:
 
 - task
 - reminder
@@ -181,28 +210,34 @@ Use exactly these fields:
 
 Rules:
 
-1. type:
-task, reminder, idea, note,
-meeting, conversation
+1. type must be:
+task
+reminder
+idea
+note
+meeting
+conversation
 
 2. task:
-Short and clear.
-If no task, use null.
+Create a short and clear description.
+If there is no action, use null.
 
 3. project:
-Identify project or work topic.
-If unknown, use null.
+Identify the work project or topic.
+Otherwise use null.
 
 4. deadline:
 YYYY-MM-DD.
-If no deadline, use null.
+Otherwise null.
 
 5. deadline_time:
 HH:MM.
-If no time, use null.
+Otherwise null.
 
 6. priority:
-high, normal, low.
+high
+normal
+low
 
 7. person:
 Important person involved.
@@ -211,8 +246,8 @@ Otherwise null.
 8. summary:
 Short useful summary.
 
-9. Convert relative dates using
-the current date.
+9. Convert relative dates based
+on today's date.
 
 Examples:
 
@@ -231,7 +266,10 @@ USER MESSAGE:
 """
 
 
-    # Model priority
+    # =====================================================
+    # MODEL FALLBACK
+    # =====================================================
+
     models_to_try = [
         "gemini-3.8-flash",
         "gemini-3.8-flash-lite"
@@ -246,15 +284,22 @@ USER MESSAGE:
         try:
 
             print(
-                f"Trying model: {model_name}"
+                f"Trying Gemini model: "
+                f"{model_name}"
             )
 
 
             response = (
-                gemini_client.models.generate_content(
+                gemini_client
+                .models
+                .generate_content(
+
                     model=model_name,
+
                     contents=prompt,
-                    config=types.GenerateContentConfig(
+
+                    config=
+                    types.GenerateContentConfig(
                         response_mime_type=
                         "application/json"
                     )
@@ -265,35 +310,34 @@ USER MESSAGE:
             if not response.text:
 
                 raise RuntimeError(
-                    "Gemini returned empty response"
+                    "Gemini returned "
+                    "an empty response"
                 )
 
 
-            # =============================================
+            # =================================================
             # TOKEN USAGE
-            # =============================================
+            # =================================================
 
             usage = response.usage_metadata
 
 
             prompt_tokens = 0
             output_tokens = 0
-            total_tokens = 0
             thinking_tokens = 0
+            total_tokens = 0
 
 
             if usage:
 
                 prompt_tokens = (
-                    usage.prompt_token_count or 0
+                    usage.prompt_token_count
+                    or 0
                 )
 
                 output_tokens = (
-                    usage.candidates_token_count or 0
-                )
-
-                total_tokens = (
-                    usage.total_token_count or 0
+                    usage.candidates_token_count
+                    or 0
                 )
 
                 thinking_tokens = (
@@ -305,39 +349,10 @@ USER MESSAGE:
                     or 0
                 )
 
-
-            print(
-                "========== GEMINI SUCCESS =========="
-            )
-
-            print(
-                "Model:",
-                model_name
-            )
-
-            print(
-                "Input tokens:",
-                prompt_tokens
-            )
-
-            print(
-                "Output tokens:",
-                output_tokens
-            )
-
-            print(
-                "Thinking tokens:",
-                thinking_tokens
-            )
-
-            print(
-                "Total tokens:",
-                total_tokens
-            )
-
-            print(
-                "===================================="
-            )
+                total_tokens = (
+                    usage.total_token_count
+                    or 0
+                )
 
 
             result = json.loads(
@@ -345,10 +360,13 @@ USER MESSAGE:
             )
 
 
-            # Add technical information
-            # to our result
+            # =================================================
+            # ADD TECHNICAL DATA
+            # =================================================
 
-            result["_model"] = model_name
+            result["_model"] = (
+                model_name
+            )
 
             result["_prompt_tokens"] = (
                 prompt_tokens
@@ -367,7 +385,14 @@ USER MESSAGE:
             )
 
             result["_fallback_used"] = (
-                model_name != models_to_try[0]
+                model_name
+                != models_to_try[0]
+            )
+
+
+            print(
+                "Gemini success:",
+                model_name
             )
 
 
@@ -376,40 +401,20 @@ USER MESSAGE:
 
         except Exception as error:
 
-            error_string = str(error)
+            error_text = str(error)
 
             print(
-                "========== MODEL FAILED =========="
+                "Gemini model failed:",
+                model_name,
+                error_text
             )
-
-            print(
-                model_name
-            )
-
-            print(
-                type(error).__name__
-            )
-
-            print(
-                error_string
-            )
-
-            print(
-                "=================================="
-            )
-
 
             errors.append(
-                f"{model_name}: "
-                + error_string
+                model_name
+                + ": "
+                + error_text
             )
 
-
-            # Continue to next model
-            continue
-
-
-    # If every model fails
 
     raise RuntimeError(
         "All Gemini models failed:\n"
@@ -418,10 +423,114 @@ USER MESSAGE:
 
 
 # =========================================================
-# FORMAT AI RESULT
+# SAVE TO GOOGLE SHEET
 # =========================================================
 
-def format_result(data):
+def save_to_google_sheet(
+    data,
+    original_message
+):
+
+    payload = {
+
+        "secret":
+            GOOGLE_APPS_SCRIPT_SECRET,
+
+        "type":
+            data.get("type"),
+
+        "task":
+            data.get("task"),
+
+        "project":
+            data.get("project"),
+
+        "deadline":
+            data.get("deadline"),
+
+        "priority":
+            data.get(
+                "priority",
+                "normal"
+            ),
+
+        "status":
+            "Open",
+
+        "original_message":
+            original_message
+    }
+
+
+    print(
+        "Sending to Google Sheet..."
+    )
+
+
+    response = requests.post(
+
+        GOOGLE_APPS_SCRIPT_URL,
+
+        json=payload,
+
+        timeout=20,
+
+        allow_redirects=True
+    )
+
+
+    print(
+        "Google status:",
+        response.status_code
+    )
+
+    print(
+        "Google response:",
+        response.text
+    )
+
+
+    if response.status_code != 200:
+
+        raise RuntimeError(
+            "Google Apps Script HTTP "
+            + str(response.status_code)
+        )
+
+
+    try:
+
+        result = response.json()
+
+    except Exception:
+
+        raise RuntimeError(
+            "Invalid Google response: "
+            + response.text[:300]
+        )
+
+
+    if result.get("status") != "success":
+
+        raise RuntimeError(
+            result.get(
+                "message",
+                "Google Sheet save failed"
+            )
+        )
+
+
+    return True
+
+
+# =========================================================
+# FORMAT LINE RESULT
+# =========================================================
+
+def format_result(
+    data,
+    saved_to_sheet=False
+):
 
     message_type = data.get(
         "type",
@@ -457,8 +566,6 @@ def format_result(data):
         "summary"
     )
 
-
-    # Technical usage
 
     model = data.get(
         "_model",
@@ -531,7 +638,8 @@ def format_result(data):
             )
 
         lines.append(
-            f"📅 Deadline: {deadline_text}"
+            f"📅 Deadline: "
+            f"{deadline_text}"
         )
 
 
@@ -558,11 +666,38 @@ def format_result(data):
         )
 
 
-    # =============================================
-    # AI STATUS
-    # =============================================
+    # =====================================================
+    # SAVE STATUS
+    # =====================================================
 
     lines.append("")
+
+
+    if saved_to_sheet:
+
+        lines.append(
+            "💾 Saved to Google Sheet ✅"
+        )
+
+    elif message_type == "conversation":
+
+        lines.append(
+            "💬 Conversation not stored"
+        )
+
+    else:
+
+        lines.append(
+            "⚠️ Google Sheet save failed"
+        )
+
+
+    # =====================================================
+    # AI STATUS
+    # =====================================================
+
+    lines.append("")
+
     lines.append(
         "──────────────"
     )
@@ -575,7 +710,7 @@ def format_result(data):
     if fallback_used:
 
         lines.append(
-            "🔄 Fallback used"
+            "🔄 Fallback model used"
         )
 
     else:
@@ -591,12 +726,14 @@ def format_result(data):
 
 
     lines.append(
-        f"📥 Input: {prompt_tokens} tokens"
+        f"📥 Input: "
+        f"{prompt_tokens} tokens"
     )
 
 
     lines.append(
-        f"📤 Output: {output_tokens} tokens"
+        f"📤 Output: "
+        f"{output_tokens} tokens"
     )
 
 
@@ -609,7 +746,8 @@ def format_result(data):
 
 
     lines.append(
-        f"📊 Total: {total_tokens} tokens"
+        f"📊 Total: "
+        f"{total_tokens} tokens"
     )
 
 
@@ -619,7 +757,7 @@ def format_result(data):
 
 
 # =========================================================
-# LINE MESSAGE HANDLER
+# LINE TEXT MESSAGE
 # =========================================================
 
 @handler.add(
@@ -634,26 +772,78 @@ def handle_text_message(event):
 
 
     print(
-        "========== USER =========="
+        "========== USER MESSAGE =========="
     )
 
     print(
         user_message
     )
 
-    print(
-        "=========================="
-    )
-
 
     try:
+
+        # =================================================
+        # AI ANALYSIS
+        # =================================================
 
         result = analyze_message(
             user_message
         )
 
+
+        # =================================================
+        # GOOGLE SHEET
+        # =================================================
+
+        saved_to_sheet = False
+
+
+        types_to_save = [
+
+            "task",
+
+            "reminder",
+
+            "meeting",
+
+            "idea",
+
+            "note"
+        ]
+
+
+        if result.get(
+            "type"
+        ) in types_to_save:
+
+            try:
+
+                save_to_google_sheet(
+                    result,
+                    user_message
+                )
+
+                saved_to_sheet = True
+
+
+            except Exception as sheet_error:
+
+                print(
+                    "GOOGLE SHEET ERROR:"
+                )
+
+                print(
+                    str(sheet_error)
+                )
+
+
+        # =================================================
+        # FORMAT RESPONSE
+        # =================================================
+
         reply_text = format_result(
-            result
+            result,
+            saved_to_sheet
         )
 
 
@@ -664,19 +854,12 @@ def handle_text_message(event):
         )
 
         print(
-            type(error).__name__
-        )
-
-        print(
             str(error)
-        )
-
-        print(
-            "=============================="
         )
 
 
         error_text = str(error)
+
 
         if len(error_text) > 800:
 
@@ -691,9 +874,9 @@ def handle_text_message(event):
         )
 
 
-    # =============================================
-    # SEND REPLY TO LINE
-    # =============================================
+    # =====================================================
+    # SEND TO LINE
+    # =====================================================
 
     with ApiClient(
         configuration
@@ -703,22 +886,29 @@ def handle_text_message(event):
             api_client
         )
 
+
         line_api.reply_message(
+
             ReplyMessageRequest(
+
                 reply_token=
                 event.reply_token,
 
                 messages=[
+
                     TextMessage(
                         text=reply_text
                     )
+
                 ]
+
             )
+
         )
 
 
 # =========================================================
-# START APP
+# START
 # =========================================================
 
 if __name__ == "__main__":
@@ -730,7 +920,11 @@ if __name__ == "__main__":
         )
     )
 
+
     app.run(
+
         host="0.0.0.0",
+
         port=port
+
     )
