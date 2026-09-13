@@ -63,30 +63,31 @@ GOOGLE_APPS_SCRIPT_SECRET = os.getenv(
 # ENVIRONMENT CHECK
 # =========================================================
 
-if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise RuntimeError(
-        "LINE_CHANNEL_ACCESS_TOKEN is not set"
-    )
+required_vars = {
+    "LINE_CHANNEL_ACCESS_TOKEN":
+        LINE_CHANNEL_ACCESS_TOKEN,
 
-if not LINE_CHANNEL_SECRET:
-    raise RuntimeError(
-        "LINE_CHANNEL_SECRET is not set"
-    )
+    "LINE_CHANNEL_SECRET":
+        LINE_CHANNEL_SECRET,
 
-if not GEMINI_API_KEY:
-    raise RuntimeError(
-        "GEMINI_API_KEY is not set"
-    )
+    "GEMINI_API_KEY":
+        GEMINI_API_KEY,
 
-if not GOOGLE_APPS_SCRIPT_URL:
-    raise RuntimeError(
-        "GOOGLE_APPS_SCRIPT_URL is not set"
-    )
+    "GOOGLE_APPS_SCRIPT_URL":
+        GOOGLE_APPS_SCRIPT_URL,
 
-if not GOOGLE_APPS_SCRIPT_SECRET:
-    raise RuntimeError(
-        "GOOGLE_APPS_SCRIPT_SECRET is not set"
-    )
+    "GOOGLE_APPS_SCRIPT_SECRET":
+        GOOGLE_APPS_SCRIPT_SECRET
+}
+
+
+for name, value in required_vars.items():
+
+    if not value:
+
+        raise RuntimeError(
+            f"{name} is not set"
+        )
 
 
 # =========================================================
@@ -112,7 +113,7 @@ gemini_client = genai.Client(
 
 
 # =========================================================
-# ROUTES
+# WEB ROUTES
 # =========================================================
 
 @app.route("/", methods=["GET"])
@@ -159,12 +160,16 @@ def analyze_message(user_message):
         ZoneInfo("Asia/Bangkok")
     )
 
-    current_date = bangkok_time.strftime(
-        "%Y-%m-%d"
+    current_date = (
+        bangkok_time.strftime(
+            "%Y-%m-%d"
+        )
     )
 
-    current_weekday = bangkok_time.strftime(
-        "%A"
+    current_weekday = (
+        bangkok_time.strftime(
+            "%A"
+        )
     )
 
 
@@ -184,7 +189,7 @@ The user may write in:
 
 Analyze the user's message.
 
-Classify it as:
+Classify it into exactly one type:
 
 - task
 - reminder
@@ -195,7 +200,7 @@ Classify it as:
 
 Return JSON only.
 
-Use exactly these fields:
+Use exactly this structure:
 
 {{
   "type": "task",
@@ -210,7 +215,7 @@ Use exactly these fields:
 
 Rules:
 
-1. type must be:
+1. type must be one of:
 task
 reminder
 idea
@@ -220,21 +225,23 @@ conversation
 
 2. task:
 Create a short and clear description.
-If there is no action, use null.
+If no action is required, use null.
 
 3. project:
-Identify the work project or topic.
-Otherwise use null.
+Identify project or work topic
+if possible.
+Otherwise null.
 
 4. deadline:
-YYYY-MM-DD.
+Use YYYY-MM-DD.
 Otherwise null.
 
 5. deadline_time:
-HH:MM.
+Use HH:MM in 24-hour format.
 Otherwise null.
 
 6. priority:
+Use:
 high
 normal
 low
@@ -244,10 +251,10 @@ Important person involved.
 Otherwise null.
 
 8. summary:
-Short useful summary.
+Create a short useful summary.
 
-9. Convert relative dates based
-on today's date.
+9. Convert relative dates using
+the current Thailand date.
 
 Examples:
 
@@ -259,6 +266,12 @@ Friday = next upcoming Friday
 
 วันศุกร์ = next upcoming Friday
 
+10. Do not invent a deadline if
+the user does not mention one.
+
+11. Do not classify greetings,
+questions, or general chat as tasks.
+
 
 USER MESSAGE:
 
@@ -267,25 +280,66 @@ USER MESSAGE:
 
 
     # =====================================================
-    # MODEL FALLBACK
+    # MODEL FALLBACK LIST
+    # =====================================================
+    #
+    # Lighter models first.
+    #
+    # If a model is not available to your API project,
+    # it will simply fail and move to the next model.
     # =====================================================
 
     models_to_try = [
+
+        "gemini-3.1-flash-lite",
+
+        "gemini-3.5-flash-lite",
+
+        "gemini-3.5-flash",
+
+        "gemini-3.6-flash",
+
+        "gemini-3.7-flash",
+
         "gemini-3.8-flash",
-        "gemini-3.8-flash-lite"
+
+        "gemini-2.5-flash-lite"
     ]
 
 
     errors = []
 
 
-    for model_name in models_to_try:
+    # =====================================================
+    # TRY EACH MODEL
+    # =====================================================
+
+    for model_index, model_name in enumerate(
+        models_to_try
+    ):
 
         try:
 
+            attempt_number = (
+                model_index + 1
+            )
+
+
             print(
-                f"Trying Gemini model: "
-                f"{model_name}"
+                "================================="
+            )
+
+            print(
+                f"Gemini attempt "
+                f"{attempt_number}"
+            )
+
+            print(
+                f"Model: {model_name}"
+            )
+
+            print(
+                "================================="
             )
 
 
@@ -300,12 +354,20 @@ USER MESSAGE:
 
                     config=
                     types.GenerateContentConfig(
+
                         response_mime_type=
-                        "application/json"
+                        "application/json",
+
+                        temperature=0.1
+
                     )
                 )
             )
 
+
+            # =================================================
+            # EMPTY RESPONSE CHECK
+            # =================================================
 
             if not response.text:
 
@@ -319,7 +381,9 @@ USER MESSAGE:
             # TOKEN USAGE
             # =================================================
 
-            usage = response.usage_metadata
+            usage = (
+                response.usage_metadata
+            )
 
 
             prompt_tokens = 0
@@ -331,14 +395,24 @@ USER MESSAGE:
             if usage:
 
                 prompt_tokens = (
-                    usage.prompt_token_count
+                    getattr(
+                        usage,
+                        "prompt_token_count",
+                        0
+                    )
                     or 0
                 )
 
+
                 output_tokens = (
-                    usage.candidates_token_count
+                    getattr(
+                        usage,
+                        "candidates_token_count",
+                        0
+                    )
                     or 0
                 )
+
 
                 thinking_tokens = (
                     getattr(
@@ -349,10 +423,28 @@ USER MESSAGE:
                     or 0
                 )
 
+
                 total_tokens = (
-                    usage.total_token_count
+                    getattr(
+                        usage,
+                        "total_token_count",
+                        0
+                    )
                     or 0
                 )
+
+
+            # =================================================
+            # PARSE JSON
+            # =================================================
+
+            print(
+                "RAW GEMINI RESPONSE:"
+            )
+
+            print(
+                response.text
+            )
 
 
             result = json.loads(
@@ -361,69 +453,148 @@ USER MESSAGE:
 
 
             # =================================================
-            # ADD TECHNICAL DATA
+            # ADD INTERNAL DATA
             # =================================================
 
             result["_model"] = (
                 model_name
             )
 
+
+            result["_attempt"] = (
+                attempt_number
+            )
+
+
             result["_prompt_tokens"] = (
                 prompt_tokens
             )
+
 
             result["_output_tokens"] = (
                 output_tokens
             )
 
+
             result["_thinking_tokens"] = (
                 thinking_tokens
             )
+
 
             result["_total_tokens"] = (
                 total_tokens
             )
 
-            result["_fallback_used"] = (
-                model_name
-                != models_to_try[0]
-            )
-
 
             print(
-                "Gemini success:",
-                model_name
+                "================================="
+            )
+
+            print(
+                "GEMINI SUCCESS"
+            )
+
+            print(
+                f"Model: {model_name}"
+            )
+
+            print(
+                f"Attempt: "
+                f"{attempt_number}"
+            )
+
+            print(
+                f"Total tokens: "
+                f"{total_tokens}"
+            )
+
+            print(
+                "================================="
             )
 
 
             return result
 
 
+        # =====================================================
+        # MODEL FAILED
+        # =====================================================
+
         except Exception as error:
 
             error_text = str(error)
 
+
             print(
-                "Gemini model failed:",
-                model_name,
-                error_text
+                "================================="
             )
 
-            errors.append(
-                model_name
-                + ": "
-                + error_text
+            print(
+                "MODEL FAILED"
             )
+
+            print(
+                f"Model: {model_name}"
+            )
+
+            print(
+                f"Error: {error_text}"
+            )
+
+            print(
+                "================================="
+            )
+
+
+            errors.append(
+                {
+                    "model":
+                        model_name,
+
+                    "error":
+                        error_text
+                }
+            )
+
+
+            # Automatically move
+            # to next model
+
+            continue
+
+
+    # =====================================================
+    # ALL MODELS FAILED
+    # =====================================================
+
+    error_summary = []
+
+
+    for item in errors:
+
+        short_error = (
+            item["error"][:180]
+        )
+
+        error_summary.append(
+            f"{item['model']}: "
+            f"{short_error}"
+        )
 
 
     raise RuntimeError(
+
         "All Gemini models failed:\n"
-        + "\n".join(errors)
+        +
+        "\n".join(
+            error_summary
+        )
+
     )
 
 
 # =========================================================
-# SAVE TO GOOGLE SHEET
+# GOOGLE SHEET
 # =========================================================
 
 def save_to_google_sheet(
@@ -448,22 +619,34 @@ def save_to_google_sheet(
         "deadline":
             data.get("deadline"),
 
+        "deadline_time":
+            data.get(
+                "deadline_time"
+            ),
+
         "priority":
             data.get(
                 "priority",
                 "normal"
             ),
 
+        "person":
+            data.get("person"),
+
+        "summary":
+            data.get("summary"),
+
         "status":
             "Open",
 
         "original_message":
             original_message
+
     }
 
 
     print(
-        "Sending to Google Sheet..."
+        "Sending data to Google Apps Script..."
     )
 
 
@@ -473,50 +656,69 @@ def save_to_google_sheet(
 
         json=payload,
 
-        timeout=20,
+        timeout=30,
 
         allow_redirects=True
     )
 
 
     print(
-        "Google status:",
+        "Google HTTP status:",
         response.status_code
     )
 
+
     print(
         "Google response:",
-        response.text
+        response.text[:500]
     )
 
 
     if response.status_code != 200:
 
         raise RuntimeError(
-            "Google Apps Script HTTP "
-            + str(response.status_code)
+
+            "Google Apps Script returned HTTP "
+            +
+            str(
+                response.status_code
+            )
+
         )
 
 
     try:
 
-        result = response.json()
+        result = (
+            response.json()
+        )
+
 
     except Exception:
 
         raise RuntimeError(
-            "Invalid Google response: "
-            + response.text[:300]
+
+            "Google Apps Script "
+            "returned invalid JSON: "
+            +
+            response.text[:300]
+
         )
 
 
-    if result.get("status") != "success":
+    if (
+        result.get("status")
+        !=
+        "success"
+    ):
 
         raise RuntimeError(
+
             result.get(
                 "message",
                 "Google Sheet save failed"
             )
+
         )
 
 
@@ -524,79 +726,102 @@ def save_to_google_sheet(
 
 
 # =========================================================
-# FORMAT LINE RESULT
+# FORMAT LINE RESPONSE
 # =========================================================
 
 def format_result(
     data,
-    saved_to_sheet=False
+    saved_to_sheet=False,
+    sheet_error=None
 ):
 
-    message_type = data.get(
-        "type",
-        "conversation"
+    message_type = (
+        data.get(
+            "type",
+            "conversation"
+        )
     )
+
 
     task = data.get(
         "task"
     )
 
+
     project = data.get(
         "project"
     )
+
 
     deadline = data.get(
         "deadline"
     )
 
+
     deadline_time = data.get(
         "deadline_time"
     )
+
 
     priority = data.get(
         "priority",
         "normal"
     )
 
+
     person = data.get(
         "person"
     )
+
 
     summary = data.get(
         "summary"
     )
 
 
+    # =====================================================
+    # AI TECHNICAL INFO
+    # =====================================================
+
     model = data.get(
         "_model",
         "Unknown"
     )
+
+
+    attempt = data.get(
+        "_attempt",
+        1
+    )
+
 
     prompt_tokens = data.get(
         "_prompt_tokens",
         0
     )
 
+
     output_tokens = data.get(
         "_output_tokens",
         0
     )
+
 
     thinking_tokens = data.get(
         "_thinking_tokens",
         0
     )
 
+
     total_tokens = data.get(
         "_total_tokens",
         0
     )
 
-    fallback_used = data.get(
-        "_fallback_used",
-        False
-    )
 
+    # =====================================================
+    # BUILD MESSAGE
+    # =====================================================
 
     lines = []
 
@@ -604,6 +829,7 @@ def format_result(
     lines.append(
         "🤖 AI Assistant"
     )
+
 
     lines.append("")
 
@@ -613,12 +839,20 @@ def format_result(
     )
 
 
+    # =====================================================
+    # TASK
+    # =====================================================
+
     if task:
 
         lines.append(
             f"📌 Task: {task}"
         )
 
+
+    # =====================================================
+    # PROJECT
+    # =====================================================
 
     if project:
 
@@ -627,21 +861,35 @@ def format_result(
         )
 
 
+    # =====================================================
+    # DEADLINE
+    # =====================================================
+
     if deadline:
 
-        deadline_text = deadline
+        deadline_text = (
+            deadline
+        )
+
 
         if deadline_time:
 
             deadline_text += (
-                f" {deadline_time}"
+                " "
+                +
+                deadline_time
             )
+
 
         lines.append(
             f"📅 Deadline: "
             f"{deadline_text}"
         )
 
+
+    # =====================================================
+    # PRIORITY
+    # =====================================================
 
     if priority:
 
@@ -650,12 +898,20 @@ def format_result(
         )
 
 
+    # =====================================================
+    # PERSON
+    # =====================================================
+
     if person:
 
         lines.append(
             f"👤 Person: {person}"
         )
 
+
+    # =====================================================
+    # SUMMARY
+    # =====================================================
 
     if summary:
 
@@ -667,7 +923,7 @@ def format_result(
 
 
     # =====================================================
-    # SAVE STATUS
+    # DATABASE STATUS
     # =====================================================
 
     lines.append("")
@@ -679,17 +935,27 @@ def format_result(
             "💾 Saved to Google Sheet ✅"
         )
 
+
     elif message_type == "conversation":
 
         lines.append(
             "💬 Conversation not stored"
         )
 
+
     else:
 
         lines.append(
             "⚠️ Google Sheet save failed"
         )
+
+
+        if sheet_error:
+
+            lines.append(
+                f"Reason: "
+                f"{sheet_error[:150]}"
+            )
 
 
     # =====================================================
@@ -702,21 +968,22 @@ def format_result(
         "──────────────"
     )
 
+
     lines.append(
         "⚙️ AI Status"
     )
 
 
-    if fallback_used:
+    if attempt == 1:
 
         lines.append(
-            "🔄 Fallback model used"
+            "✅ Primary model"
         )
 
     else:
 
         lines.append(
-            "✅ Primary model"
+            f"🔄 Fallback #{attempt - 1}"
         )
 
 
@@ -757,7 +1024,7 @@ def format_result(
 
 
 # =========================================================
-# LINE TEXT MESSAGE
+# LINE TEXT HANDLER
 # =========================================================
 
 @handler.add(
@@ -772,18 +1039,26 @@ def handle_text_message(event):
 
 
     print(
-        "========== USER MESSAGE =========="
+        "================================="
+    )
+
+    print(
+        "USER MESSAGE"
     )
 
     print(
         user_message
     )
 
+    print(
+        "================================="
+    )
+
 
     try:
 
         # =================================================
-        # AI ANALYSIS
+        # ANALYZE WITH GEMINI
         # =================================================
 
         result = analyze_message(
@@ -792,10 +1067,12 @@ def handle_text_message(event):
 
 
         # =================================================
-        # GOOGLE SHEET
+        # DECIDE WHETHER TO STORE
         # =================================================
 
         saved_to_sheet = False
+
+        sheet_error_text = None
 
 
         types_to_save = [
@@ -809,12 +1086,15 @@ def handle_text_message(event):
             "idea",
 
             "note"
+
         ]
 
 
-        if result.get(
-            "type"
-        ) in types_to_save:
+        if (
+            result.get("type")
+            in
+            types_to_save
+        ):
 
             try:
 
@@ -823,17 +1103,31 @@ def handle_text_message(event):
                     user_message
                 )
 
+
                 saved_to_sheet = True
 
 
             except Exception as sheet_error:
 
+                sheet_error_text = (
+                    str(sheet_error)
+                )
+
+
                 print(
-                    "GOOGLE SHEET ERROR:"
+                    "================================="
                 )
 
                 print(
-                    str(sheet_error)
+                    "GOOGLE SHEET ERROR"
+                )
+
+                print(
+                    sheet_error_text
+                )
+
+                print(
+                    "================================="
                 )
 
 
@@ -842,45 +1136,72 @@ def handle_text_message(event):
         # =================================================
 
         reply_text = format_result(
+
             result,
-            saved_to_sheet
+
+            saved_to_sheet,
+
+            sheet_error_text
+
         )
 
+
+    # =====================================================
+    # GENERAL ERROR
+    # =====================================================
 
     except Exception as error:
 
         print(
-            "========== AI ERROR =========="
+            "================================="
+        )
+
+        print(
+            "AI ASSISTANT ERROR"
         )
 
         print(
             str(error)
         )
 
+        print(
+            "================================="
+        )
 
-        error_text = str(error)
+
+        error_text = str(
+            error
+        )
 
 
-        if len(error_text) > 800:
+        if (
+            len(error_text)
+            >
+            1000
+        ):
 
             error_text = (
-                error_text[:800]
+                error_text[:1000]
             )
 
 
         reply_text = (
+
             "⚠️ AI Assistant error\n\n"
-            + error_text
+            +
+            error_text
+
         )
 
 
     # =====================================================
-    # SEND TO LINE
+    # SEND MESSAGE TO LINE
     # =====================================================
 
     with ApiClient(
         configuration
     ) as api_client:
+
 
         line_api = MessagingApi(
             api_client
@@ -892,7 +1213,7 @@ def handle_text_message(event):
             ReplyMessageRequest(
 
                 reply_token=
-                event.reply_token,
+                    event.reply_token,
 
                 messages=[
 
@@ -908,16 +1229,18 @@ def handle_text_message(event):
 
 
 # =========================================================
-# START
+# START APPLICATION
 # =========================================================
 
 if __name__ == "__main__":
 
     port = int(
+
         os.environ.get(
             "PORT",
             10000
         )
+
     )
 
 
