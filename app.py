@@ -149,6 +149,50 @@ def callback():
 
     return "OK", 200
 
+@app.route("/test-google", methods=["GET"])
+def test_google():
+
+    payload = {
+        "secret": GOOGLE_APPS_SCRIPT_SECRET,
+        "type": "task",
+        "task": "Test from Render",
+        "project": "AI Assistant",
+        "deadline": "2026-09-18",
+        "deadline_time": "",
+        "priority": "normal",
+        "person": "",
+        "summary": "Testing Google Sheet connection",
+        "status": "Open",
+        "original_message": "Render connection test"
+    }
+
+    try:
+
+        response = requests.post(
+            GOOGLE_APPS_SCRIPT_URL,
+            json=payload,
+            timeout=30,
+            allow_redirects=True
+        )
+
+        return {
+            "status_code": response.status_code,
+            "final_url": response.url,
+            "history": [
+                {
+                    "status": r.status_code,
+                    "url": r.url
+                }
+                for r in response.history
+            ],
+            "body": response.text[:1000]
+        }, 200
+
+    except Exception as error:
+
+        return {
+            "error": str(error)
+        }, 500
 
 # =========================================================
 # GEMINI ANALYSIS
