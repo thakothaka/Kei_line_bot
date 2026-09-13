@@ -42,12 +42,6 @@ GEMINI_API_KEY = os.getenv(
     "GEMINI_API_KEY"
 )
 
-if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
-
-if not LINE_CHANNEL_SECRET:
-    raise RuntimeError("Missing LINE_CHANNEL_SECRET")
-
 
 # =========================
 # LINE CONFIG
@@ -91,9 +85,6 @@ def callback():
     body = request.get_data(
         as_text=True
     )
-
-    if not signature:
-        abort(400)
 
     try:
 
@@ -352,25 +343,16 @@ def handle_text_message(event):
             api_client
         )
 
-        try:
-
-            line_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[
-                        TextMessage(
-                            text=reply_text
-                        )
-                    ]
-                )
+        line_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=reply_text
+                    )
+                ]
             )
-
-        except Exception as error:
-
-            print(
-                "LINE reply error:",
-                error
-            )
+        )
 
 
 # =========================
