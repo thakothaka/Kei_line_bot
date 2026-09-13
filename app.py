@@ -23,12 +23,16 @@ from google import genai
 from google.genai import types
 
 
+# =========================================================
+# APP
+# =========================================================
+
 app = Flask(__name__)
 
 
-# =========================
+# =========================================================
 # ENVIRONMENT VARIABLES
-# =========================
+# =========================================================
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv(
     "LINE_CHANNEL_ACCESS_TOKEN"
@@ -43,9 +47,29 @@ GEMINI_API_KEY = os.getenv(
 )
 
 
-# =========================
+# =========================================================
+# BASIC ENV CHECK
+# =========================================================
+
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    raise RuntimeError(
+        "LINE_CHANNEL_ACCESS_TOKEN is not set"
+    )
+
+if not LINE_CHANNEL_SECRET:
+    raise RuntimeError(
+        "LINE_CHANNEL_SECRET is not set"
+    )
+
+if not GEMINI_API_KEY:
+    raise RuntimeError(
+        "GEMINI_API_KEY is not set"
+    )
+
+
+# =========================================================
 # LINE CONFIG
-# =========================
+# =========================================================
 
 configuration = Configuration(
     access_token=LINE_CHANNEL_ACCESS_TOKEN
@@ -56,22 +80,21 @@ handler = WebhookHandler(
 )
 
 
-# =========================
+# =========================================================
 # GEMINI CONFIG
-# =========================
+# =========================================================
 
 gemini_client = genai.Client(
     api_key=GEMINI_API_KEY
 )
 
 
-# =========================
-# WEB ROUTES
-# =========================
+# =========================================================
+# ROUTES
+# =========================================================
 
 @app.route("/", methods=["GET"])
 def home():
-
     return "LINE AI Assistant is running", 200
 
 
@@ -87,22 +110,20 @@ def callback():
     )
 
     try:
-
         handler.handle(
             body,
             signature
         )
 
     except InvalidSignatureError:
-
         abort(400)
 
     return "OK", 200
 
 
-# =========================
-# AI FUNCTION
-# =========================
+# =========================================================
+# GEMINI ANALYSIS
+# =========================================================
 
 def analyze_message(user_message):
 
@@ -110,11 +131,11 @@ def analyze_message(user_message):
         ZoneInfo("Asia/Bangkok")
     )
 
-    today = bangkok_time.strftime(
+    current_date = bangkok_time.strftime(
         "%Y-%m-%d"
     )
 
-    weekday = bangkok_time.strftime(
+    current_weekday = bangkok_time.strftime(
         "%A"
     )
 
@@ -122,25 +143,18 @@ def analyze_message(user_message):
 You are a personal work assistant.
 
 Current date in Thailand:
-{today}
+{current_date}
 
 Today is:
-{weekday}
+{current_weekday}
+
+The user may write in English, Thai,
+or mixed Thai and English.
 
 Analyze the user's message.
 
-User may write in:
-- English
-- Thai
-- mixed Thai and English
+Classify it into one of these types:
 
-Your job is to determine whether the message
-contains a work task, reminder, idea, information,
-meeting, or general conversation.
-
-Extract these fields:
-
-type:
 - task
 - reminder
 - idea
@@ -148,40 +162,76 @@ type:
 - meeting
 - conversation
 
-task:
-Short clear description.
+Return JSON only.
 
-project:
-Project or work topic if identifiable.
-If unknown, use null.
+Use exactly these fields:
 
-deadline:
-Use YYYY-MM-DD format.
-If no deadline exists, use null.
+{{
+  "type": "task",
+  "task": "short task description",
+  "project": null,
+  "deadline": null,
+  "deadline_time": null,
+  "priority": "normal",
+  "person": null,
+  "summary": "short summary"
+}}
 
-deadline_time:
-Use HH:MM 24-hour format.
-If no time exists, use null.
+Rules:
 
-priority:
-- high
-- normal
-- low
+1. type must be one of:
+   task
+   reminder
+   idea
+   note
+   meeting
+   conversation
 
-person:
-Important person involved.
-If none, use null.
+2. task:
+   Make it short and clear.
+   If there is no task, use null.
 
-summary:
-Short useful summary.
+3. project:
+   Identify the project or work topic
+   when possible.
+   Otherwise use null.
 
-If user uses relative dates such as:
-- tomorrow
-- next Friday
-- วันพรุ่งนี้
-- วันศุกร์หน้า
+4. deadline:
+   Use YYYY-MM-DD.
+   If there is no deadline, use null.
 
-calculate the real date based on the current date.
+5. deadline_time:
+   Use HH:MM in 24-hour format.
+   If there is no time, use null.
+
+6. priority:
+   Use:
+   high
+   normal
+   low
+
+7. person:
+   Important person involved.
+   Otherwise use null.
+
+8. summary:
+   Short useful summary.
+
+9. Convert relative dates based on today's date.
+
+Examples:
+
+"tomorrow"
+means the next calendar day.
+
+"Friday"
+means the next upcoming Friday.
+
+"วันพรุ่งนี้"
+means tomorrow.
+
+"วันศุกร์"
+means the next upcoming Friday.
 
 User message:
 
@@ -196,6 +246,15 @@ User message:
         )
     )
 
+    if not response.text:
+        raise RuntimeError(
+            "Gemini returned an empty response"
+        )
+
+    print("========== GEMINI RAW ==========")
+    print(response.text)
+    print("================================")
+
     result = json.loads(
         response.text
     )
@@ -203,13 +262,13 @@ User message:
     return result
 
 
-# =========================
+# =========================================================
 # FORMAT RESULT
-# =========================
+# =========================================================
 
 def format_result(data):
 
-    type_value = data.get(
+    message_type = data.get(
         "type",
         "conversation"
     )
@@ -245,21 +304,22 @@ def format_result(data):
 
     lines = []
 
-    lines.append("🤖 AI Assistant")
+    lines.append(
+        "🤖 AI Assistant"
+    )
+
     lines.append("")
 
     lines.append(
-        f"Type: {type_value}"
+        f"Type: {message_type}"
     )
 
     if task:
-
         lines.append(
             f"📌 Task: {task}"
         )
 
     if project:
-
         lines.append(
             f"📁 Project: {project}"
         )
@@ -269,7 +329,6 @@ def format_result(data):
         deadline_text = deadline
 
         if deadline_time:
-
             deadline_text += (
                 f" {deadline_time}"
             )
@@ -279,19 +338,16 @@ def format_result(data):
         )
 
     if priority:
-
         lines.append(
             f"⭐ Priority: {priority}"
         )
 
     if person:
-
         lines.append(
             f"👤 Person: {person}"
         )
 
     if summary:
-
         lines.append("")
         lines.append(
             f"Summary: {summary}"
@@ -300,9 +356,9 @@ def format_result(data):
     return "\n".join(lines)
 
 
-# =========================
+# =========================================================
 # LINE MESSAGE HANDLER
-# =========================
+# =========================================================
 
 @handler.add(
     MessageEvent,
@@ -311,6 +367,10 @@ def format_result(data):
 def handle_text_message(event):
 
     user_message = event.message.text
+
+    print("========== USER MESSAGE ==========")
+    print(user_message)
+    print("==================================")
 
     try:
 
@@ -325,14 +385,31 @@ def handle_text_message(event):
     except Exception as error:
 
         print(
-            "Gemini error:",
-            error
+            "========== GEMINI ERROR =========="
         )
 
+        print(
+            type(error).__name__
+        )
+
+        print(
+            str(error)
+        )
+
+        print(
+            "=================================="
+        )
+
+        error_text = str(error)
+
+        if len(error_text) > 700:
+            error_text = error_text[:700]
+
         reply_text = (
-            "⚠️ I received your message, "
-            "but AI analysis failed.\n\n"
-            "Please try again."
+            "⚠️ Gemini error\n\n"
+            + type(error).__name__
+            + "\n\n"
+            + error_text
         )
 
     with ApiClient(
@@ -355,9 +432,9 @@ def handle_text_message(event):
         )
 
 
-# =========================
-# RUN APP
-# =========================
+# =========================================================
+# RUN
+# =========================================================
 
 if __name__ == "__main__":
 
